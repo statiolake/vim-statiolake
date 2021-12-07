@@ -1,0 +1,3 @@
+[submodule "contrib/lang-ja"]
+	path = contrib/lang-ja
+	url = https://github.com/vim-jp/lang-ja

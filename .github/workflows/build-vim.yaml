@@ -1,0 +1,483 @@
+# Based on: github.com/k-takata/vim-kt
+name: Build Vim
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+
+env:
+  VIMREPO: https://github.com/vim/vim
+  PATCHREPO: https://github.com/statiolake/vim
+  PATCH_REVS: darkmode_w32 centering
+  PATCH_FEATURES: DARKMODE_W32=yes
+  VCVARSALL: C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+  GITBIN: C:\Program Files\Git\usr\bin
+
+  # Interfaces
+  # LuaJIT
+  LUA_VER: 51
+  LUAJIT_GIT_URL: https://luajit.org/git/luajit.git
+  LUAJIT_DIR: D:\LuaJIT
+  # Perl
+  PERL_VER: 532
+  PERL_VER_DOT: "5.32"
+  PERL_RELEASE: 5.32.1.1
+  PERL_URL: https://strawberryperl.com/download/%PERL_RELEASE%/strawberry-perl-%PERL_RELEASE%-%BITS%bit-portable.zip
+  PERL_DIR: D:\Strawberry\perl
+  # Python 3
+  PYTHON3_VER: 39
+  PYTHON3_VER_DOT: "3.9"
+  PYTHON3_RELEASE: 3.9.0
+  PYTHON3_URL: https://www.python.org/ftp/python/%PYTHON3_RELEASE%/python-%PYTHON3_RELEASE%%PYARCH%.exe
+  PYTHON3_DIR: D:\python3
+  # Ruby
+  RUBY_VER: 30
+  RUBY_VER_DOT: "3.0"
+  RUBY_API_VER_LONG: 3.0.0
+  RUBY_BRANCH: ruby_3_0
+  RUBY_RELEASE: 3.0.2-1
+  RUBY_SRC_URL: https://github.com/ruby/ruby/archive/%RUBY_BRANCH%.zip
+  RUBY_URL: https://github.com/oneclick/rubyinstaller2/releases/download/RubyInstaller-%RUBY_RELEASE%/rubyinstaller-%RUBY_RELEASE%-%ARCH%.7z
+  RUBY_DIR: D:\rubyinstaller
+
+  # Other dependencies
+  # gettext
+  GETTEXT_URL: https://github.com/mlocati/gettext-iconv-windows/releases/download/v0.21-v1.16/gettext0.21-iconv1.16-shared-%BITS%.zip
+  GETTEXT_DIR: D:\gettext
+  # winpty
+  WINPTY_URL: https://github.com/rprichard/winpty/releases/download/0.4.3/winpty-0.4.3-msvc2015.zip
+
+  # Escape sequences
+  COL_RED: "\x1b[31m"
+  COL_GREEN: "\x1b[32m"
+  COL_YELLOW: "\x1b[33m"
+  COL_RESET: "\x1b[m"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        arch: [x64, x86]
+        include:
+          - arch: x64
+            vcarch: amd64
+            warch: x64
+            bits: 64
+            cygreg: registry
+            pyreg: ""
+          - arch: x86
+            vcarch: x86
+            warch: ia32
+            bits: 32
+            cygreg: registry32
+            pyreg: "-32"
+
+    steps:
+      - name: Initalize
+        id: init
+        shell: bash
+        run: |
+          echo "::set-output name=date::$(date +%Y%m%d)"
+          git config --global core.autocrlf input
+      - uses: actions/checkout@v2
+      - name: Checkout submodules and update them
+        shell: bash
+        run: |
+          # Checkout the lastest version, ignore error
+          git submodule update --init --depth 1 || true
+          for i in contrib/*/; do
+            git -C $i checkout master
+          done
+
+      - name: Checkout Vim
+        shell: bash
+        run: |
+          if ! git clone ${VIMREPO}.git --shallow-exclude="$(cat vimver.txt)"; then
+            if [ "${{ github.event_name }}" = 'pull_request' ]; then
+              git clone ${VIMREPO}.git --depth=5
+            else
+              exit 0
+            fi
+          fi
+          git -C vim log -4 --color=always
+      - name: Apply patches
+        shell: bash
+        run: |
+          if [ ! -d vim ]; then
+            exit 0
+          fi
+          cd vim
+
+          # add remote
+          git remote add statiolake https://github.com/statiolake/vim
+          git fetch statiolake
+
+          # apply patches
+          git config --local user.name "statiolake"
+          git config --local user.email "statiolake@users.noreply.github.com"
+          for patch in ${PATCH_REVS}; do
+            git checkout -b $patch statiolake/$patch
+            git rebase master
+            git checkout master
+            git merge --no-ff $patch
+          done
+      - name: Get changelog
+        id: changelog
+        shell: bash
+        run: |
+          mkdir package/artifacts
+          if [ ! -d vim ] || [ "$(git -C vim tag)" = "" ]; then
+            cp vimver.txt package/artifacts/latest.txt
+            touch package/artifacts/changelog.md
+            exit 0
+          fi
+          cd vim
+          latest=$(git describe --tags --abbrev=0)
+          echo "::set-output name=ref::${latest:1}"
+          echo $latest > ../package/artifacts/latest.txt
+          echo $latest > ../vimver.txt
+          git rev-parse HEAD > ../package/artifacts/latestrev.txt
+          oldrev=$(cat ../vimrev.txt)
+          if git log --format='format:' $oldrev > /dev/null 2>&1; then
+            logopt=$oldrev..HEAD
+          else
+            logopt=--
+          fi
+          commiturl=${VIMREPO}/commit/
+          git log --format='format:%H %s' $logopt | \
+            sed -e 's/[][_*^<`\\]/\\&/g' \
+                -e 's/%/%25/g' \
+                -e "s#^\([0-9a-f]*\) patch \([0-9.a-z]*\)#* [\2]($commiturl\1)#" \
+                -e "s#^\([0-9a-f]*\) \(.*\)#* [\2]($commiturl\1)#" | \
+            sed -e ':a;N;$!ba;s/\n/%0A/g' | \
+            tee ../package/artifacts/changelog.md
+          echo
+          git log --format='format:* %s' $logopt | \
+            sed -e 's/^\* patch /* /g' | \
+            tee ../package/artifacts/changelog.txt
+      - name: Check changes
+        id: check
+        shell: bash
+        run: |
+          if git diff --quiet HEAD vimver.txt; then
+            echo ${COL_YELLOW}No updates.${COL_RESET}
+            if [ "${{ github.event_name }}" = 'pull_request' ]; then
+              # Don't skip on pull_request even if there are no updates.
+              echo "::set-output name=skip::no"
+            else
+              echo "::set-output name=skip::yes"
+            fi
+          else
+            echo "::set-output name=skip::no"
+          fi
+
+      - name: Create a list of download URLs
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          type NUL > urls.txt
+          echo %PERL_RELEASE%>> urls.txt
+          echo %PYTHON3_RELEASE%>> urls.txt
+          echo %RUBY_RELEASE%>> urls.txt
+          echo %GETTEXT_URL%>> urls.txt
+          echo %WINPTY_URL%>> urls.txt
+      - name: Cache downloaded files
+        if: steps.check.outputs.skip == 'no'
+        uses: actions/cache@v2
+        with:
+          path: downloads
+          key: ${{ runner.os }}-${{ matrix.bits }}-${{ hashFiles('urls.txt') }}
+      - name: Download dependencies
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          path C:\Program Files\7-Zip;%path%
+          set BITS=${{ matrix.bits }}
+          set ARCH=${{ matrix.arch }}
+          if ${{ matrix.arch }}==x64 (
+            set PYARCH=-amd64
+          ) else (
+            set PYARCH=
+          )
+          echo %COL_GREEN%Download Perl%COL_RESET%
+          call :downloadfile %PERL_URL% downloads\perl.zip
+          :: Extract only the "perl" folder.
+          7z x downloads\perl.zip perl -o%PERL_DIR%\.. > nul || exit 1
+          echo %COL_GREEN%Download Python3%COL_RESET%
+          call :downloadfile %PYTHON3_URL% downloads\python3.exe
+          start /wait downloads\python3.exe /quiet TargetDir=%PYTHON3_DIR% Include_pip=0 Include_tcltk=0 Include_test=0 Include_tools=0 AssociateFiles=0 Shortcuts=0 Include_doc=0 Include_launcher=0 InstallLauncherAllUsers=0
+          echo %COL_GREEN%Download Ruby%COL_RESET%
+          call :downloadfile %RUBY_URL% downloads\ruby.7z
+          7z x downloads\ruby.7z -oD:\ > nul || exit 1
+          move D:\rubyinstaller-%RUBY_RELEASE%-${{ matrix.arch }} %RUBY_DIR% > nul || exit 1
+          echo %COL_GREEN%Download Ruby source%COL_RESET%
+          call :downloadfile %RUBY_SRC_URL% downloads\ruby_src.zip
+          :: Extract the files only we needed to reduce the building time.
+          7z x downloads\ruby_src.zip */bin */enc/Makefile.in */win32 */common.mk -ir!version.h -xr!README.* -xr!*/win32/*.c -xr!*/win32/*.h -o.. > nul || exit 1
+          move ..\ruby-%RUBY_BRANCH% ..\ruby > nul || exit 1
+          echo %COL_GREEN%Download gettext%COL_RESET%
+          call :downloadfile %GETTEXT_URL% downloads\gettext.zip
+          7z e -y downloads\gettext.zip -o%GETTEXT_DIR% > nul || exit 1
+          echo %COL_GREEN%Download winpty%COL_RESET%
+          call :downloadfile %WINPTY_URL% downloads\winpty.zip
+          7z x -y downloads\winpty.zip -oD:\winpty > nul || exit 1
+          copy /Y D:\winpty\${{ matrix.warch }}\bin\winpty.dll        vim\src\winpty${{ matrix.bits }}.dll
+          copy /Y D:\winpty\${{ matrix.warch }}\bin\winpty-agent.exe  vim\src\
+          goto :eof
+          :downloadfile
+          :: call :downloadfile <URL> <localfile>
+          if not exist %2 (
+            curl -f -L %1 -o %2
+          )
+          if ERRORLEVEL 1 (
+            rem Retry once.
+            curl -f -L %1 -o %2 || exit 1
+          )
+          goto :eof
+      - name: Create Ruby's config.h
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          call "%VCVARSALL%" ${{ matrix.vcarch }}
+          cd ..\ruby
+          call win32\configure.bat
+          nmake -nologo .config.h.time || exit 1
+          xcopy /s .ext\include %RUBY_DIR%\include\ruby-%RUBY_API_VER_LONG%
+      - name: Update ja.po
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          call "%VCVARSALL%" ${{ matrix.vcarch }}
+          copy /y contrib\lang-ja\src\po\ja.po vim\src\po
+          cd vim\src\po
+          cl sjiscorr.c
+          iconv -f utf-8 -t cp932 ja.po | sjiscorr | dos2unix > ja.sjis.po
+          iconv -f utf-8 -t euc-jp ja.po | sed ^
+            -e "s/charset=[uU][tT][fF]-8/charset=euc-jp/" ^
+            -e "s/# Original translations/# Generated from ja.po, DO NOT EDIT/" ^
+            > ja.euc-jp.po
+      - name: Update patchlevel
+        if: steps.check.outputs.skip == 'no'
+        shell: bash
+        run: |
+          cd vim/src
+          patchlevel=$(sed -n -e '/included_patches/{n;n;n;s/ *\([0-9]*\).*/\1/p;q}' version.c)
+          sed -i -e "/VIM_VERSION_PATCHLEVEL/s/0/$patchlevel/" version.h
+      - name: Copy src directory to src2
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          cd vim
+          xcopy src src2\ /E > nul
+
+      - name: Build and install LuaJIT
+        shell: cmd
+        run: |
+          :: Clone LuaJIT
+          git clone %LUAJIT_GIT_URL%
+          cd luajit\src
+
+          :: Build
+          call "%VCVARSALL%" ${{ matrix.vcarch }}
+          call msvcbuild
+
+          :: Install
+          md %LUAJIT_DIR%\lua\jit
+          copy luajit.exe %LUAJIT_DIR%
+          copy lua51.dll %LUAJIT_DIR%
+          copy *.lib %LUAJIT_DIR%
+          copy *.h %LUAJIT_DIR%
+          copy jit\* %LUAJIT_DIR%\lua\jit
+
+      - name: Build
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          call "%VCVARSALL%" ${{ matrix.vcarch }}
+          cd vim\src
+          rem Suppress progress animation
+          sed -e "s/@<<$/@<< | sed -e 's#.*\\\\r.*##'/" Make_mvc.mak > Make_mvc2.mak
+          rem Build gvim/vim with VIMDLL
+          nmake -nologo -f Make_mvc2.mak ^
+            GUI=yes IME=yes ICONV=yes VIMDLL=yes ^
+            DYNAMIC_LUA=yes LUA=%LUAJIT_DIR% ^
+            DYNAMIC_PERL=yes PERL=%PERL_DIR% ^
+            DYNAMIC_PYTHON3=yes PYTHON3=%PYTHON3_DIR% ^
+            DYNAMIC_RUBY=yes RUBY=%RUBY_DIR% RUBY_MSVCRT_NAME=msvcrt ^
+            %PATCH_FEATURES% ^
+            || exit 1
+          if not exist vim${{ matrix.bits }}.dll (
+            echo %COL_RED%Build failure.%COL_RESET%
+            exit 1
+          )
+          cd po
+          nmake -nologo -f Make_mvc.mak GETTEXT_PATH="\"%GITBIN%\"" || exit 1
+          nmake -nologo -f Make_mvc.mak install-all
+      - name: Test
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        timeout-minutes: 20
+        run: |
+          path %LUAJIT_DIR%;%PERL_DIR%\bin;%PYTHON3_DIR%;%RUBY_DIR%\bin;%RUBY_DIR%\bin\ruby_builtin_dlls;%GETTEXT_DIR%;%path%
+          call "%VCVARSALL%" ${{ matrix.vcarch }}
+          cd vim\src
+          echo.
+          echo %COL_GREEN%gvim version:%COL_RESET%
+          start /wait .\gvim -u NONE -c "redir @a | ver | put a | 1,3d | wq!" ver.txt
+          type ver.txt || exit 1
+          start /wait .\gvim -u NONE -S ..\..\scripts\if_ver.vim -c quit
+          type if_ver.txt
+          echo %COL_GREEN%vim version:%COL_RESET%
+          .\vim --version || exit 1
+          .\vim --not-a-term -u NONE -S ..\..\scripts\if_ver.vim -c quit
+          type if_ver.txt
+          echo %COL_GREEN%Start testing vim in background.%COL_RESET%
+          start cmd /c "cd ..\src2\testdir & nmake -nologo -f Make_dos.mak VIMPROG=..\..\src\vim > nul & echo done>done.txt"
+          echo %COL_GREEN%Test gvim:%COL_RESET%
+          cd testdir
+          nmake -nologo -f Make_dos.mak VIMPROG=..\gvim || exit 1
+          cd ..
+          echo %COL_GREEN%Wait for vim tests to finish.%COL_RESET%
+          cd ..\src2\testdir
+          :: Wait about 10 minutes.
+          for /L %%i in (1,1,600) do (
+            if exist done.txt goto exitloop
+            ping -n 2 localhost > nul
+          )
+          set timeout=1
+          :exitloop
+          echo %COL_GREEN%Test results of vim:%COL_RESET%
+          if exist messages type messages
+          nmake -nologo -f Make_dos.mak report VIMPROG=..\..\src\vim || exit 1
+          if "%timeout%"=="1" (
+            echo %COL_RED%Timed out.%COL_RESET%
+            exit 1
+          )
+      - name: Package
+        if: steps.check.outputs.skip == 'no'
+        shell: cmd
+        run: |
+          cd package
+          set DEST=vim-statiolake-win${{ matrix.bits }}
+          md %DEST%
+          copy ..\vim\src\*.pdb     .
+          copy ..\vim\src\*vim*.exe %DEST%
+          copy ..\vim\src\vim*.dll  %DEST%
+          copy ..\vim\src\tee\*.exe %DEST%
+          copy ..\vim\src\xxd\*.exe %DEST%
+          copy ..\vim\src\winpty*   %DEST%
+          copy ..\vim\LICENSE       %DEST%
+          copy ..\README.md         %DEST%
+          copy %LUAJIT_DIR%\lua*.dll %DEST%
+          copy %GETTEXT_DIR%\libiconv-2.dll %DEST%
+          copy %GETTEXT_DIR%\libintl-8.dll  %DEST%
+          rem if exist %GETTEXT_DIR%\libgcc_s_sjlj-1.dll copy %GETTEXT_DIR%\libgcc_s_sjlj-1.dll %DEST%
+          xcopy ..\vim\runtime %DEST%\runtime /Y /E /V /I /H /R /Q
+          md %DEST%\runtime\pack\dist-kt\start
+          :: Don't copy hidden files
+          xcopy ..\contrib\autofmt   %DEST%\runtime\pack\dist-kt\start\autofmt   /Y /E /V /I /R /Q
+          del %DEST%\runtime\pack\dist-kt\start\autofmt\.gitignore
+          xcopy ..\contrib\vimdoc-ja %DEST%\runtime\pack\dist-kt\start\vimdoc-ja /Y /E /V /I /R /Q
+          del %DEST%\runtime\pack\dist-kt\start\vimdoc-ja\.gitignore
+          xcopy ..\contrib\vim-mild  %DEST%\runtime\pack\dist-kt\start\vim-mild  /Y /E /V /I /R /Q
+          rem del %DEST%\runtime\pack\dist-kt\start\vim-mild\.gitignore
+          rem md artifacts
+          set BASENAME=vim-statiolake-${{ steps.changelog.outputs.ref }}-${{ steps.init.outputs.date }}-win${{ matrix.bits }}
+          7z a -mx=9 artifacts\%BASENAME%.zip %DEST%
+          7z a -mx=9 artifacts\%BASENAME%.7z  %DEST%
+          7z a -mx=9 artifacts\%BASENAME%-pdb.7z *.pdb
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: vim-statiolake-win${{ matrix.bits }}
+          path: ./package/artifacts
+
+  release:
+    runs-on: windows-latest
+    needs: [build]
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Initalize
+        shell: bash
+        run: |
+          git config --global core.autocrlf input
+      - uses: actions/checkout@v2
+      - name: Checkout and update submodules
+        shell: bash
+        run: |
+          # Checkout the lastest version, ignore error
+          git submodule update --init --depth 1 || true
+          for i in contrib/*/; do
+            git -C $i checkout master
+          done
+      - name: Download Artifact (win32)
+        uses: actions/download-artifact@v1
+        with:
+          name: vim-statiolake-win32
+
+      - name: Download Artifact (win64)
+        uses: actions/download-artifact@v1
+        with:
+          name: vim-statiolake-win64
+
+      - name: Get changelog
+        id: changelog
+        shell: bash
+        run: |
+          changelog=$(cat vim-statiolake-win64/changelog.md)
+          echo "::set-output name=log::$changelog"
+          latest=$(cat vim-statiolake-win64/latest.txt)
+          echo "::set-output name=ref::${latest:1}"
+          echo $latest > vimver.txt
+      - name: Commit and push
+        id: commit
+        shell: bash
+        run: |
+          if git diff --quiet HEAD vimver.txt; then
+            echo ${COL_YELLOW}No updates.${COL_RESET}
+            echo "::set-output name=skip::yes"
+          else
+            cp vim-statiolake-win64/latestrev.txt vimrev.txt
+            git config --local user.name "statiolake"
+            git config --local user.email "statiolake@users.noreply.github.com"
+            git commit -a \
+              -m "Update Vim to v${{ steps.changelog.outputs.ref }}" \
+              -m "$(cat vim-statiolake-win64/changelog.txt)"
+            git tag "v${{ steps.changelog.outputs.ref }}"
+            git push origin HEAD --tags
+            echo "::set-output name=skip::no"
+          fi
+      - name: Create Release
+        uses: softprops/action-gh-release@9993ae85344fa542b3edb2533f97011277698cf6
+        if: steps.commit.outputs.skip == 'no'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.changelog.outputs.ref }}
+          name: v${{ steps.changelog.outputs.ref }}
+          body: |
+            ### Changes:
+            ${{ steps.changelog.outputs.log }}
+            ### Compiled with:
+            * [LuaJIT](${{ env.LUAJIT_GIT_URL }}) (default branch)
+            * [Strawberry Perl](https://strawberryperl.com/) ${{ env.PERL_VER_DOT }}
+            * [Python](https://www.python.org/downloads/) ${{ env.PYTHON3_VER_DOT }}
+            * [RubyInstaller](https://rubyinstaller.org/downloads/) ${{ env.RUBY_VER_DOT }}
+          draft: false
+          prerelease: false
+          files: |
+            ./vim-statiolake-win32/vim-statiolake-*-*-win32.zip
+            ./vim-statiolake-win32/vim-statiolake-*-*-win32.7z
+            ./vim-statiolake-win32/vim-statiolake-*-*-win32-pdb.7z
+            ./vim-statiolake-win64/vim-statiolake-*-*-win64.zip
+            ./vim-statiolake-win64/vim-statiolake-*-*-win64.7z
+            ./vim-statiolake-win64/vim-statiolake-*-*-win64-pdb.7z
+
+# vim: ts=2 sw=2 sts=2 et
