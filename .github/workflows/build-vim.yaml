@@ -98,14 +98,11 @@ jobs:
       - name: Checkout Vim
         shell: bash
         run: |
-          if ! git clone ${VIMREPO}.git --shallow-exclude="$(cat vimver.txt)"; then
-            if [ "${{ github.event_name }}" = 'pull_request' ]; then
-              git clone ${VIMREPO}.git --depth=5
-            else
-              exit 0
-            fi
-          fi
+          git clone ${VIMREPO}
+          git checkout master
           git -C vim log -4 --color=always
+          mkdir package/artifacts
+          git -C vim rev-parse HEAD > package/artifacts/latestrev.txt
       - name: Apply patches
         shell: bash
         run: |
@@ -115,7 +112,7 @@ jobs:
           cd vim
 
           # add remote
-          git remote add statiolake https://github.com/statiolake/vim
+          git remote add statiolake ${PATCHREPO}
           git fetch statiolake
 
           # apply patches
@@ -123,15 +120,15 @@ jobs:
           git config --local user.email "statiolake@users.noreply.github.com"
           for patch in ${PATCH_REVS}; do
             git checkout -b $patch statiolake/$patch
-            git rebase master
+            git rebase origin/master
             git checkout master
-            git merge --no-ff $patch
+            git merge --squash $patch
+            git commit -m "Merge branch ${patch} into master"
           done
       - name: Get changelog
         id: changelog
         shell: bash
         run: |
-          mkdir package/artifacts
           if [ ! -d vim ] || [ "$(git -C vim tag)" = "" ]; then
             cp vimver.txt package/artifacts/latest.txt
             touch package/artifacts/changelog.md
@@ -142,7 +139,6 @@ jobs:
           echo "::set-output name=ref::${latest:1}"
           echo $latest > ../package/artifacts/latest.txt
           echo $latest > ../vimver.txt
-          git rev-parse HEAD > ../package/artifacts/latestrev.txt
           oldrev=$(cat ../vimrev.txt)
           if git log --format='format:' $oldrev > /dev/null 2>&1; then
             logopt=$oldrev..HEAD
