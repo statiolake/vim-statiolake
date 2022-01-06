@@ -12,8 +12,8 @@ on:
 env:
   VIMREPO: https://github.com/vim/vim
   PATCHREPO: https://github.com/statiolake/vim
-  PATCH_REVS: centering
-  PATCH_FEATURES:
+  PATCH_REVS: darkmode_w32 centering
+  PATCH_FEATURES: DARKMODE_W32=yes
   VCVARSALL: C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
   GITBIN: C:\Program Files\Git\usr\bin
 
