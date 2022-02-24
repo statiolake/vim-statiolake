@@ -360,7 +360,7 @@ jobs:
         shell: cmd
         run: |
           cd package
-          set DEST=vim-statiolake-win${{ matrix.bits }}
+          set DEST=vim-win${{ matrix.bits }}
           md %DEST%
           copy ..\vim\src\*.pdb     .
           copy ..\vim\src\*vim*.exe %DEST%
@@ -384,14 +384,14 @@ jobs:
           xcopy ..\contrib\vim-mild  %DEST%\runtime\pack\dist-kt\start\vim-mild  /Y /E /V /I /R /Q
           rem del %DEST%\runtime\pack\dist-kt\start\vim-mild\.gitignore
           rem md artifacts
-          set BASENAME=vim-statiolake-${{ steps.changelog.outputs.ref }}-${{ steps.init.outputs.date }}-win${{ matrix.bits }}
+          set BASENAME=vim-${{ steps.changelog.outputs.ref }}-${{ steps.init.outputs.date }}-win${{ matrix.bits }}
           7z a -mx=9 artifacts\%BASENAME%.zip %DEST%
           7z a -mx=9 artifacts\%BASENAME%.7z  %DEST%
           7z a -mx=9 artifacts\%BASENAME%-pdb.7z *.pdb
       - name: Upload Artifact
         uses: actions/upload-artifact@v1
         with:
-          name: vim-statiolake-win${{ matrix.bits }}
+          name: vim-win${{ matrix.bits }}
           path: ./package/artifacts
 
   release:
@@ -416,20 +416,20 @@ jobs:
       - name: Download Artifact (win32)
         uses: actions/download-artifact@v1
         with:
-          name: vim-statiolake-win32
+          name: vim-win32
 
       - name: Download Artifact (win64)
         uses: actions/download-artifact@v1
         with:
-          name: vim-statiolake-win64
+          name: vim-win64
 
       - name: Get changelog
         id: changelog
         shell: bash
         run: |
-          changelog=$(cat vim-statiolake-win64/changelog.md)
+          changelog=$(cat vim-win64/changelog.md)
           echo "::set-output name=log::$changelog"
-          latest=$(cat vim-statiolake-win64/latest.txt)
+          latest=$(cat vim-win64/latest.txt)
           echo "::set-output name=ref::${latest:1}"
           echo $latest > vimver.txt
       - name: Commit and push
@@ -440,12 +440,12 @@ jobs:
             echo ${COL_YELLOW}No updates.${COL_RESET}
             echo "::set-output name=skip::yes"
           else
-            cp vim-statiolake-win64/latestrev.txt vimrev.txt
+            cp vim-win64/latestrev.txt vimrev.txt
             git config --local user.name "statiolake"
             git config --local user.email "statiolake@users.noreply.github.com"
             git commit -a \
               -m "Update Vim to v${{ steps.changelog.outputs.ref }}" \
-              -m "$(cat vim-statiolake-win64/changelog.txt)"
+              -m "$(cat vim-win64/changelog.txt)"
             git tag "v${{ steps.changelog.outputs.ref }}"
             git push origin HEAD --tags
             echo "::set-output name=skip::no"
@@ -469,11 +469,11 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            ./vim-statiolake-win32/vim-statiolake-*-*-win32.zip
-            ./vim-statiolake-win32/vim-statiolake-*-*-win32.7z
-            ./vim-statiolake-win32/vim-statiolake-*-*-win32-pdb.7z
-            ./vim-statiolake-win64/vim-statiolake-*-*-win64.zip
-            ./vim-statiolake-win64/vim-statiolake-*-*-win64.7z
-            ./vim-statiolake-win64/vim-statiolake-*-*-win64-pdb.7z
+            ./vim-win32/vim-*-*-win32.zip
+            ./vim-win32/vim-*-*-win32.7z
+            ./vim-win32/vim-*-*-win32-pdb.7z
+            ./vim-win64/vim-*-*-win64.zip
+            ./vim-win64/vim-*-*-win64.7z
+            ./vim-win64/vim-*-*-win64-pdb.7z
 
 # vim: ts=2 sw=2 sts=2 et
